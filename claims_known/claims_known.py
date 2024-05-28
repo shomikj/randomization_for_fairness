@@ -98,7 +98,7 @@ class experiment():
     # Conduct weighted lottery over the remaining claims
     def partial_bf_utility_vs_selection(self, partial=0.25, iterations=1000):
         results = []
-        for i in tqdm(range(1000)):
+        for i in tqdm(range(iterations)):
             claims = self.get_claims()
             sorted_claims = np.sort(claims)
             for k in range(1, int(self.n/2)):
@@ -125,6 +125,104 @@ class experiment():
         
         return results
 
+    def partial_bf_randomization_rate(self, selection_rate=0.5, iterations=1000):
+        results = []
+        k = int(self.n * selection_rate)
+
+        for i in tqdm(range(iterations)):
+            claims = self.get_claims()
+            sorted_claims = np.sort(claims)
+            determ_util = np.mean(sorted_claims[-k:])
+            for perc_random_k in [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]:
+                random_k = int(perc_random_k * k)
+                not_random_k = k - random_k
+                for perc_random_n in [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]:
+                    random_n = int(perc_random_n * self.n)
+                    if random_n < random_k or random_n > self.n - not_random_k:
+                        continue
+
+                    if not_random_k==0: # all resources randomized
+                        determ = np.array([])
+                        random = self.weighted_lottery(sorted_claims[-random_n:], random_k)
+                    elif random_k==0: # no resources randomized
+                        determ = sorted_claims[-not_random_k:]
+                        random = np.array([])
+                    else:
+                        determ = sorted_claims[-not_random_k:]
+                        random = self.weighted_lottery(sorted_claims[((self.n - not_random_k + 1) - random_n):(self.n - not_random_k + 1)], random_k)
+                    random_util = np.mean(np.concatenate([determ, random]))
+                    results.append({"random_k": random_k, "random_n": random_n, "random_util": random_util, "determ_util": determ_util})
+
+        results = pd.DataFrame(results)
+        results = results.groupby(["random_k", "random_n"]).mean().reset_index()
+        results["perc_random_k"] = results["random_k"]/k
+        results["perc_random_n"] = results["random_n"]/self.n
+        results["util_diff"] = results["determ_util"] - results["random_util"]
+        
+        return results
+
+    def systemic_exclusion_randomization_rate(self, selection_rate=0.5, noise_std=0, num_decision_makers=2, iterations=1000):
+        results = []
+        k = int(selection_rate*self.n)
+        
+        for i in tqdm(range(iterations)):
+            claims = self.get_claims()
+            claims = np.sort(claims)
+            people = np.arange(self.n)
+
+            noisy_claims = {}
+            noisy_people = {}
+            for j in range(num_decision_makers):
+                if noise_std>0:
+                    noisy_claims[j] = np.clip(np.add(claims, np.random.normal(0, noise_std, self.n)), 0, 1)
+                    noisy_people[j] = np.array([x for _,x in sorted(zip(noisy_claims[j], people))])
+                    noisy_claims[j] = np.sort(noisy_claims[j])
+                else:
+                    noisy_claims[j] = claims
+                    noisy_people[j] = people     
+
+            
+            for perc_random_k in [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]:
+                random_k = int(perc_random_k * k)
+                not_random_k = k - random_k
+                for perc_random_n in [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]:
+                    random_n = int(perc_random_n * self.n)
+                    if random_n < random_k or random_n > self.n - not_random_k:
+                        continue
+                    
+                    determ_chosen = {}
+                    random_chosen = {}
+                    for j in range(num_decision_makers):
+                        determ_chosen[j] = noisy_people[j][-k:]
+    
+                        if not_random_k==0: # all resources randomized
+                            determ = np.array([])
+                            random = self.weighted_lottery(noisy_people[j][-random_n:], random_k, noisy_claims[j][-random_n:])
+                        elif random_k==0: # no resources randomized
+                            determ = noisy_people[j][-not_random_k:]
+                            random = np.array([])
+                        else:
+                            determ = noisy_people[j][-not_random_k:]
+                            random = self.weighted_lottery(noisy_people[j][((self.n - not_random_k + 1) - random_n):(self.n - not_random_k + 1)], random_k, noisy_claims[j][((self.n - not_random_k + 1) - random_n):(self.n - not_random_k + 1)])
+    
+                        random_chosen[j] = np.concatenate([determ, random])
+            
+                    determ_chosen_once = determ_chosen[0]
+                    random_chosen_once = random_chosen[0]
+                    for j in range(1,num_decision_makers):
+                        determ_chosen_once=np.union1d(determ_chosen_once, determ_chosen[j])
+                        random_chosen_once=np.union1d(random_chosen_once, random_chosen[j])
+                        
+                        results.append({"m": j+1, "random_k": random_k, "random_n": random_n, "determ_ser": 1-(len(determ_chosen_once)/self.n), "random_ser": 1-(len(random_chosen_once)/self.n)})
+
+        results = pd.DataFrame(results)
+        results = results.groupby(["m", "random_k", "random_n"]).mean().reset_index()
+        results["perc_random_k"] = results["random_k"]/k
+        results["perc_random_n"] = results["random_n"]/self.n
+        results["ser_diff"] = results["determ_ser"] - results["random_ser"]
+        
+        return results
+            
     # Test effect of randomization on systemic exclusion rate
     # partial: amount of randomization (see partial BF) 
     # Fixed selection rate, number of decision makers, and gaussian noise added to each decision maker's estimation of claims
